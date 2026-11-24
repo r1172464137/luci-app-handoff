@@ -1,0 +1,61 @@
+# 用 ImmortalWrt SDK 打包：24.10 出 ipk，25.12 出 apk（包与架构无关，x86/64 的 SDK 就够）。
+# 推送 v* 标签时发到 Releases；手动运行只做测试构建，产物在 Actions 的 artifact 里。
+name: build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['24.10.6', '25.12.2']
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: src }
+      - name: 版本号要和标签一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=$(sed -n 's/^PKG_VERSION:=//p' src/Makefile)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Makefile 里是 $v，标签是 $GITHUB_REF_NAME" >&2; exit 1; }
+      - name: 下载 SDK
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq zstd gawk unzip file rsync >/dev/null
+          URL=https://downloads.immortalwrt.org/releases/${{ matrix.release }}/targets/x86/64
+          SDKF=$(curl -fsSL "$URL/sha256sums" | grep -o '[^ *]*sdk-[^ ]*\.tar\.zst' | head -1)
+          curl -fsSL "$URL/$SDKF" | zstd -d | tar -x
+          mv "${SDKF%.tar.zst}" sdk
+      - name: 打包
+        working-directory: sdk
+        run: |
+          # luci.mk 在 luci feed 里，po2lmo 要 luci-base/host；依赖装上免得 defconfig 报缺包
+          ./scripts/feeds update base luci >/dev/null
+          ./scripts/feeds install luci-base firewall4 ip-full jshn
+          rsync -a --exclude .git --exclude .github ../src/ package/luci-app-handoff/
+          printf 'CONFIG_PACKAGE_luci-app-handoff=m\nCONFIG_PACKAGE_luci-i18n-handoff-zh-cn=m\n' >.config
+          make defconfig >/dev/null
+          make package/luci-app-handoff/compile -j1 V=s >build.log 2>&1 || { tail -60 build.log; exit 1; }
+          mkdir -p ../out
+          find bin/packages -name '*handoff*.[ia]pk' -exec cp {} ../out/ \;
+          ls -la ../out
+          [ "$(ls ../out | wc -l)" -ge 2 ] || { echo "没打出界面包和翻译包" >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with: { name: 'pkg-${{ matrix.release }}', path: out }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'pkg-*', path: pkgs, merge-multiple: true }
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" pkgs/* -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "24.10 用 .ipk，25.12 用 .apk（未签名，apk 需加 --allow-untrusted）。"
