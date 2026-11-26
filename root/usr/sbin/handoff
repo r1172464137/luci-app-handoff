@@ -220,15 +220,19 @@ v6_tier() { # 地址 优先级策略 → 30 / 20 / 10 / 0
 	esac
 }
 
-lan_pfx64() { # 提取 $dev 上所有 global /64 地址规范化后的前 4 段（去前导零，展开 ::）
-	ip -6 addr show dev "$dev" scope global 2>/dev/null | awk '
+lan_pfx64() { # 提取 $dev 上所有同网段 global/ULA /64 前缀（兼容 ip6assign=60/62/64，去前导零并展开 ::）
+	{
+		ip -6 addr show dev "$dev" scope global 2>/dev/null | awk '/inet6 [^ ]+\/[0-9]+ / { print $2 }'
+		ip -6 route show dev "$dev" 2>/dev/null | awk '!/ via / && $1 ~ /\/64$/ && $1 !~ /^fe[89ab][0-9a-f]:/ { print $1 }'
+	} | awk '
 	function norm_h(s) {
 		s = tolower(s)
 		sub(/^0+/, "", s)
 		return (s == "") ? "0" : s
 	}
-	/inet6 [^ ]+\/64 / {
-		split($2, a, "/")
+	{
+		split($1, a, "/")
+		if (a[2] + 0 < 1 || a[2] + 0 > 64) next
 		addr = a[1]
 		if (index(addr, "::") > 0) {
 			split(addr, lr, "::")
