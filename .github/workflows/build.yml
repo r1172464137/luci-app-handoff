@@ -1,5 +1,6 @@
 # 用 ImmortalWrt SDK 打包：24.10 出 ipk，25.12 出 apk（包与架构无关，x86/64 的 SDK 就够）。
-# 推送 v* 标签时发到 Releases；手动运行只做测试构建，产物在 Actions 的 artifact 里。
+# 推送 v* 标签时签名、发到 Releases，并把签名软件源部署到 GitHub Pages；
+# 手动触发（workflow_dispatch）也会打包并刷新 GitHub Pages 软件源（不发 Release）。
 name: build
 
 on:
@@ -25,6 +26,17 @@ jobs:
         run: |
           v=$(sed -n 's/^PKG_VERSION:=//p' src/Makefile)
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Makefile 里是 $v，标签是 $GITHUB_REF_NAME" >&2; exit 1; }
+      - name: 准备签名密钥
+        env:
+          KEY_BUILD: ${{ secrets.HANDOFF_KEY_BUILD }}
+          APK_KEY: ${{ secrets.HANDOFF_APK_KEY }}
+        run: |
+          if [ -n "$KEY_BUILD" ] && [ -n "$APK_KEY" ]; then
+            mkdir -p "$RUNNER_TEMP/keys"
+            printf '%s\n' "$KEY_BUILD" > "$RUNNER_TEMP/keys/key-build"
+            printf '%s\n' "$APK_KEY" > "$RUNNER_TEMP/keys/private-key.pem"
+            echo "KEY_DIR=$RUNNER_TEMP/keys" >> "$GITHUB_ENV"
+          fi
       - name: 下载 SDK
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq zstd gawk unzip file rsync >/dev/null
@@ -32,20 +44,35 @@ jobs:
           SDKF=$(curl -fsSL "$URL/sha256sums" | grep -o '[^ *]*sdk-[^ ]*\.tar\.zst' | head -1)
           curl -fsSL "$URL/$SDKF" | zstd -d | tar -x
           mv "${SDKF%.tar.zst}" sdk
-      - name: 打包
+      - name: 打包与生成签名软件源
         working-directory: sdk
         run: |
           # luci.mk 在 luci feed 里，po2lmo 要 luci-base/host；依赖装上免得 defconfig 报缺包
           ./scripts/feeds update base luci >/dev/null
           ./scripts/feeds install luci-base firewall4 ip-full jshn
-          rsync -a --exclude .git --exclude .github ../src/ package/luci-app-handoff/
-          printf 'CONFIG_PACKAGE_luci-app-handoff=m\nCONFIG_PACKAGE_luci-i18n-handoff-zh-cn=m\n' >.config
+          rsync -a --exclude .git --exclude .github --exclude keys ../src/ package/luci-app-handoff/
+          SIGN=n
+          if [ -n "${KEY_DIR:-}" ]; then
+            cp "$KEY_DIR/key-build" "$KEY_DIR/private-key.pem" .
+            SIGN=y
+          fi
+          printf 'CONFIG_PACKAGE_luci-app-handoff=m\nCONFIG_PACKAGE_luci-i18n-handoff-zh-cn=m\nCONFIG_SIGNED_PACKAGES=%s\n' "$SIGN" >.config
           make defconfig >/dev/null
+          rm -rf bin/packages
           make package/luci-app-handoff/compile -j1 V=s >build.log 2>&1 || { tail -60 build.log; exit 1; }
           mkdir -p ../out
           find bin/packages -name '*handoff*.[ia]pk' -exec cp {} ../out/ \;
           ls -la ../out
           [ "$(ls ../out | wc -l)" -ge 2 ] || { echo "没打出界面包和翻译包" >&2; exit 1; }
+          if [ "$SIGN" = y ]; then
+            make package/index V=s >index.log 2>&1 || { tail -60 index.log; exit 1; }
+            rm -f key-build private-key.pem
+            REL=${{ matrix.release }}
+            FEED="../out/site/feed/${REL%.*}"
+            mkdir -p "$FEED"
+            cp bin/packages/x86_64/base/* "$FEED/"
+            ls -la "$FEED"
+          fi
       - uses: actions/upload-artifact@v4
         with: { name: 'pkg-${{ matrix.release }}', path: out }
 
@@ -58,4 +85,62 @@ jobs:
         with: { pattern: 'pkg-*', path: pkgs, merge-multiple: true }
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" pkgs/* -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "24.10 用 .ipk，25.12 用 .apk（未签名，apk 需加 --allow-untrusted）。"
+        run: |
+          gh release create "$GITHUB_REF_NAME" pkgs/*handoff*.ipk pkgs/*handoff*.apk \
+            -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "推荐通过签名软件源安装与升级，详见 README；也可直接下载：24.10 用 .ipk，25.12 用 .apk。"
+
+  pages:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: '${{ steps.deploy.outputs.page_url }}'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'pkg-*', path: pkgs, merge-multiple: true }
+      - name: 组装软件源站点（feed + 公钥 + 首页）
+        run: |
+          mkdir -p site/feed
+          cp -r pkgs/site/feed/* site/feed/
+          cp keys/* site/feed/
+          cat > site/index.html <<'EOF'
+          <!doctype html>
+          <html lang="zh-CN">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>luci-app-handoff 软件源</title>
+            <style>
+              body{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;line-height:1.6;color:#222}
+              pre{background:#f5f6f8;padding:12px 14px;border-radius:6px;overflow-x:auto;font-size:13px}
+              code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+              h2{margin-top:28px}
+              a{color:#0052ab}
+            </style>
+          </head>
+          <body>
+            <h1>luci-app-handoff 签名软件源</h1>
+            <p>包与架构无关（<code>all</code>），适用于所有架构的 OpenWrt / ImmortalWrt 24.10（opkg）与 25.12（apk）。</p>
+            <h2>OpenWrt / ImmortalWrt 24.10（opkg）</h2>
+            <pre><code>wget -qO /etc/opkg/keys/e5d081b67f327ff4 https://r1172464137.github.io/luci-app-handoff/feed/handoff-opkg.pub
+          echo 'src/gz handoff https://r1172464137.github.io/luci-app-handoff/feed/24.10' &gt;&gt; /etc/opkg/customfeeds.conf
+          opkg update &amp;&amp; opkg install luci-app-handoff luci-i18n-handoff-zh-cn</code></pre>
+            <h2>OpenWrt / ImmortalWrt 25.12（apk）</h2>
+            <pre><code>wget -qO /etc/apk/keys/handoff-apk.pem https://r1172464137.github.io/luci-app-handoff/feed/handoff-apk.pem
+          echo 'https://r1172464137.github.io/luci-app-handoff/feed/25.12/packages.adb' &gt;&gt; /etc/apk/repositories.d/customfeeds.list
+          apk update &amp;&amp; apk add luci-app-handoff luci-i18n-handoff-zh-cn</code></pre>
+            <p>仓库主页：<a href="https://github.com/r1172464137/luci-app-handoff">r1172464137/luci-app-handoff</a></p>
+          </body>
+          </html>
+          EOF
+          find site -maxdepth 3 -ls
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -8,11 +8,35 @@ OpenWrt / ImmortalWrt 上的「网关分流」：按 **设备组 × 目标**（G
 - **IPv6**：默认按网关 MAC 自动发现 IPv6 地址（优先级 `GUA > ULA > fe80::`）并自动跟踪前缀变化，也支持手动指定或关闭；IPv6 不可用时可按网关选择「拒绝并回退 IPv4」、「直连」或「黑洞丢弃」。
 - **设备组**：LuCI 内置局域网设备多选器，支持搜索筛选、一键多选以及离线设备 MAC 批量粘贴。
 
-依赖：`firewall4`、`ip-full`、`jshn`。页面在「服务 → 网关分流」。
+依赖：`firewall4`、`ip-full`、`jshn`。页面在「服务 → 网关分流」。包与架构无关（`all`）。
 
 ## 安装
 
-从 [Releases](https://github.com/r1172464137/luci-app-handoff/releases) 下载：24.10 用 `.ipk`（`opkg install`），25.12 用 `.apk`（`apk add --allow-untrusted`）。包与架构无关。
+### 方式一：添加签名软件源（推荐，支持一键升级）
+
+**OpenWrt / ImmortalWrt 24.10（opkg）**：
+
+```sh
+wget -qO /etc/opkg/keys/e5d081b67f327ff4 https://r1172464137.github.io/luci-app-handoff/feed/handoff-opkg.pub
+grep -q 'luci-app-handoff/feed/24.10' /etc/opkg/customfeeds.conf 2>/dev/null || \
+  echo 'src/gz handoff https://r1172464137.github.io/luci-app-handoff/feed/24.10' >> /etc/opkg/customfeeds.conf
+opkg update && opkg install luci-app-handoff luci-i18n-handoff-zh-cn
+```
+
+**OpenWrt / ImmortalWrt 25.12（apk）**：
+
+```sh
+wget -qO /etc/apk/keys/handoff-apk.pem https://r1172464137.github.io/luci-app-handoff/feed/handoff-apk.pem
+grep -q 'luci-app-handoff/feed/25.12' /etc/apk/repositories.d/customfeeds.list 2>/dev/null || \
+  echo 'https://r1172464137.github.io/luci-app-handoff/feed/25.12/packages.adb' >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add luci-app-handoff luci-i18n-handoff-zh-cn
+```
+
+软件源公钥同时存放在本仓库的 [`keys/`](keys/) 目录。
+
+### 方式二：手动下载安装包
+
+从 [Releases](https://github.com/r1172464137/luci-app-handoff/releases) 下载：24.10 用 `.ipk`（`opkg install`），25.12 用 `.apk`（若未导入公钥，需加 `apk add --allow-untrusted`）。
 
 ## 命令
 
