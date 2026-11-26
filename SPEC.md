@@ -14,8 +14,9 @@ config handoff 'main'              # 固定段名 main
 config gateway                     # 可多个；段名（匿名段的 cfgXXXX 也行）就是网关 ID，规则的 target / 网关的 fallback 引用它
 	option name '旁路由'           # 显示名
 	option ip '192.168.99.3'       # 必填，IPv4 地址
-	option ip6_mode 'auto'         # 'auto'（默认，按 MAC 自动发现 GUA > ULA > fe80::）| 'manual'（手动填 ip6）| 'off'（不使用 IPv6）
+	option ip6_mode 'auto'         # 'auto'（默认，按 MAC 自动发现同网段 IPv6）| 'manual'（手动填 ip6）| 'off'（不使用 IPv6）
 	                               # 兼容旧配置：未设 ip6_mode 但填了 ip6 时按 'manual' 处理
+	option ip6_prefer 'ula_lla_gua' # auto 模式地址优先级：'ula_lla_gua'（ULA > fe80:: > GUA，默认）| 'lla_ula_gua'（fe80:: > ULA > GUA）| 'gua_ula_lla'（GUA > ULA > fe80::）
 	option ip6 ''                  # ip6_mode='manual' 时使用的 IPv6 地址（不带前缀长度）
 	option v6_fallback 'reject'    # IPv6 关闭、未发现或不通时：'reject'（拒绝并回退 v4）| 'direct'（直连）| 'blackhole'（黑洞丢弃）
 	option dns_port '53'           # 1–65535，默认 53
@@ -54,7 +55,7 @@ config rule                        # 分流规则，按段的先后顺序，第�
   "running": true,
   "gateways": [
     { "id": "side", "name": "旁路由", "ip": "192.168.99.3", "ip6": "2001:db8::3",
-      "ip6_mode": "auto", "v6_fallback": "reject",
+      "ip6_mode": "auto", "ip6_prefer": "ula_lla_gua", "v6_fallback": "reject",
       "up": true, "up6": true, "via": "side" }
   ],
   "geoip": [ { "cat": "cn", "count": 9665, "mtime": 1764000000 } ],

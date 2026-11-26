@@ -151,7 +151,7 @@ msgstr ""
 msgid "IPv6 mode"
 msgstr ""
 
-msgid "Auto-discover matches the gateway's IPv6 address by its MAC (GUA > ULA > link-local fe80::) and tracks prefix changes automatically."
+msgid "Auto-discover matches the gateway's IPv6 address by its MAC and tracks prefix changes automatically (only on-link ULA/GUA matching the LAN /64 prefix are accepted)."
 msgstr ""
 
 msgid "Auto-discover (by MAC)"
@@ -161,6 +161,21 @@ msgid "Manual"
 msgstr ""
 
 msgid "Disabled"
+msgstr ""
+
+msgid "IPv6 priority"
+msgstr ""
+
+msgid "Address preference when auto-discovering: ULA and link-local (fe80::) stay stable across ISP prefix changes; when fe80:: is used, IPv6 DNS falls back to gateway IPv4 DNS."
+msgstr ""
+
+msgid "ULA > Link-local (fe80::) > GUA (Recommended)"
+msgstr ""
+
+msgid "Link-local (fe80::) > ULA > GUA"
+msgstr ""
+
+msgid "GUA > ULA > Link-local (fe80::)"
 msgstr ""
 
 msgid "IPv6 address"

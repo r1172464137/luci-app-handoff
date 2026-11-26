@@ -76,14 +76,24 @@ r "while uci -q delete handoff.@rule[0]; do :; done
 	uci set handoff.main.enabled=1; uci set handoff.main.lan=lan; uci set handoff.main.interval=2
 	uci commit handoff"
 gw side side $GW '' direct auto reject
+r "uci set handoff.side.ip6_prefer='ula_lla_gua'; uci commit handoff"
 rule rside side
 r "/etc/init.d/handoff enable; /etc/init.d/handoff restart
 	for i in \$(seq 30); do handoff status | grep -q '^GeoIP cn' && nft list chain inet handoff decide | grep -q g_cn && break; sleep 2; done
 	handoff status"
 
-echo "== IPv6 自动发现（ip6_mode=auto）：自动带出 side 的 IPv6，国外交给网关，DNS 都给网关"
+echo "== IPv6 自动发现（ip6_prefer=ula_lla_gua，环境无 ULA）：优先选 fe80:: 走 v6 路由，v6 DNS 拒绝促走 v4 DNS"
 expect "JSON ip6_mode=auto" "$(J '@.gateways[0].ip6_mode')" auto
-expect "JSON 自动发现 ip6" "$(J '@.gateways[0].ip6')" "$GW6"
+expect "JSON ip6_prefer=ula_lla_gua" "$(J '@.gateways[0].ip6_prefer')" ula_lla_gua
+expect "JSON 自动发现 fe80" "$(J '@.gateways[0].ip6')" "fe80::5a:ff:fe00:400"
+expect "JSON up6=true" "$(J '@.gateways[0].up6')" true
+matrix client-a direct SIDE direct SIDE GW FAIL GW
+
+echo "== IPv6 自动发现（ip6_prefer=gua_ula_lla）：自动带出 side 的公网 GUA，v6 流量与 v6 DNS 都走网关"
+r "uci set handoff.side.ip6_prefer='gua_ula_lla'; uci commit handoff"
+reload
+expect "JSON ip6_prefer=gua_ula_lla" "$(J '@.gateways[0].ip6_prefer')" gua_ula_lla
+expect "JSON 自动发现 GUA" "$(J '@.gateways[0].ip6')" "$GW6"
 expect "JSON up6=true" "$(J '@.gateways[0].up6')" true
 for c in client-a client-b; do matrix $c direct SIDE direct SIDE GW GW GW; done
 

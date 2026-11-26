@@ -50,7 +50,8 @@ jobs:
           # luci.mk 在 luci feed 里，po2lmo 要 luci-base/host；依赖装上免得 defconfig 报缺包
           ./scripts/feeds update base luci >/dev/null
           ./scripts/feeds install luci-base firewall4 ip-full jshn
-          rsync -a --exclude .git --exclude .github --exclude keys ../src/ package/luci-app-handoff/
+          # 保留 .git 让 luci.mk 为翻译包生成标准的 YY.DDD.xxxxx~hash 版本号，方便后续 apk/opkg 无缝升级
+          rsync -a --exclude .github --exclude keys ../src/ package/luci-app-handoff/
           SIGN=n
           if [ -n "${KEY_DIR:-}" ]; then
             cp "$KEY_DIR/key-build" "$KEY_DIR/private-key.pem" .

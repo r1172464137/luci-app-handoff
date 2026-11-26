@@ -134,7 +134,7 @@ load() {
 }
 
 gw_collect() { # 段名
-	local s=$1 ip ip6 ip6_mode v6fb dns probe fb mac i v
+	local s=$1 ip ip6 ip6_mode ip6_pref v6fb dns probe fb mac i v
 	valid_sid "$s" || { warn "网关段名 $s 不合法，跳过"; return; }
 	config_get ip "$s" ip
 	[ -n "$ip" ] || { warn "网关 $s：没有设置 IPv4 地址，跳过"; return; }
@@ -152,6 +152,8 @@ gw_collect() { # 段名
 		if [ -n "$ip6" ]; then ip6_mode=manual; else ip6_mode=auto; fi
 	fi
 	case $ip6_mode in auto | manual | off) ;; *) ip6_mode=auto ;; esac
+	config_get ip6_pref "$s" ip6_prefer ula_lla_gua
+	case $ip6_pref in ula_lla_gua | lla_ula_gua | gua_ula_lla) ;; *) ip6_pref=ula_lla_gua ;; esac
 	if [ "$ip6_mode" = manual ]; then
 		valid_addr6 "$ip6" || ip6=
 	elif [ "$ip6_mode" = auto ]; then
@@ -182,6 +184,7 @@ gw_collect() { # 段名
 	eval "gw_id_$GW_N=\$s"
 	eval "gw_ip_$GW_N=\$ip"
 	eval "gw_ip6_mode_$GW_N=\$ip6_mode"
+	eval "gw_ip6_pref_$GW_N=\$ip6_pref"
 	eval "gw_ip6_$GW_N=\$ip6"
 	eval "gw_v6fb_$GW_N=\$v6fb"
 	eval "gw_mac_$GW_N=\$mac"
@@ -197,34 +200,33 @@ read_gw_mac() { # IPv4 → 小写 MAC
 	}'
 }
 
-pick_ip6_for_mac() { # 小写 MAC → 从 ip -6 neigh 选优先级最高的地址：GUA > ULA > fe80::
-	ip -6 neigh show dev "$dev" 2>/dev/null | awk -v mac="$1" '
-	{
-		addr = $1
-		m = ""
-		for (n = 2; n < NF; n++) if ($n == "lladdr") { m = tolower($(n + 1)); break }
-		if (m != mac) next
-		st = $NF
-		if (st == "FAILED" || st == "INCOMPLETE") next
-		a = tolower(addr)
-		tier = 0
-		if (a ~ /^[23][0-9a-f][0-9a-f][0-9a-f]:/) tier = 30
-		else if (a ~ /^f[cd][0-9a-f][0-9a-f]:/) tier = 20
-		else if (a ~ /^fe[89ab][0-9a-f]:/) tier = 10
-		else next
-		bonus = 0
-		if (st == "REACHABLE") bonus = 5
-		else if (st == "DELAY" || st == "PROBE") bonus = 3
-		else if (st == "STALE") bonus = 2
-		else if (st == "PERMANENT") bonus = 1
-		score = tier + bonus
-		if (score > best_score) { best_score = score; best = addr }
-	}
-	END { if (best != "") print best }'
+v6_tier() { # 地址 优先级策略 → 30 / 20 / 10 / 0
+	local a="$1" pref="$2" kind=
+	[ -n "$a" ] || { echo 0; return; }
+	if echo "$a" | grep -qiE '^f[cd][0-9a-f][0-9a-f]:'; then
+		kind=ula
+	elif echo "$a" | grep -qiE '^fe[89ab][0-9a-f]:'; then
+		kind=lla
+	elif echo "$a" | grep -qiE '^[23][0-9a-f][0-9a-f][0-9a-f]:'; then
+		kind=gua
+	else
+		echo 0; return
+	fi
+	case "$pref:$kind" in
+	ula_lla_gua:ula | lla_ula_gua:lla | gua_ula_lla:gua) echo 30 ;;
+	ula_lla_gua:lla | lla_ula_gua:ula | gua_ula_lla:ula) echo 20 ;;
+	ula_lla_gua:gua | lla_ula_gua:gua | gua_ula_lla:lla) echo 10 ;;
+	*) echo 0 ;;
+	esac
 }
 
-lan_pfx64() { # 提取 $dev 上所有 global /64 地址的前 4 段（展开 ::）
+lan_pfx64() { # 提取 $dev 上所有 global /64 地址规范化后的前 4 段（去前导零，展开 ::）
 	ip -6 addr show dev "$dev" scope global 2>/dev/null | awk '
+	function norm_h(s) {
+		s = tolower(s)
+		sub(/^0+/, "", s)
+		return (s == "") ? "0" : s
+	}
 	/inet6 [^ ]+\/64 / {
 		split($2, a, "/")
 		addr = a[1]
@@ -234,17 +236,80 @@ lan_pfx64() { # 提取 $dev 上所有 global /64 地址的前 4 段（展开 ::�
 			nr = (lr[2] == "") ? 0 : split(lr[2], R, ":")
 			z = 8 - nl - nr
 			n = 0
-			for (i = 1; i <= nl; i++) H[++n] = L[i]
+			for (i = 1; i <= nl; i++) H[++n] = norm_h(L[i])
 			for (i = 1; i <= z; i++) H[++n] = "0"
-			for (i = 1; i <= nr; i++) H[++n] = R[i]
+			for (i = 1; i <= nr; i++) H[++n] = norm_h(R[i])
 		} else {
 			n = split(addr, H, ":")
+			for (i = 1; i <= n; i++) H[i] = norm_h(H[i])
 		}
 		if (n >= 4) {
 			p = H[1] ":" H[2] ":" H[3] ":" H[4]
 			if (!seen[p]++) print p
 		}
 	}'
+}
+
+pick_ip6_for_mac() { # 小写 MAC 优先级策略 → 从 ip -6 neigh 选优先级最高的同网段地址（过滤不同网段 ULA/GUA）
+	local mac="$1" pref="${2:-ula_lla_gua}" pfxs
+	pfxs=$(lan_pfx64 | tr '\n' ' ')
+	ip -6 neigh show dev "$dev" 2>/dev/null | awk -v mac="$mac" -v pref="$pref" -v pfxs=" $pfxs " '
+	function norm_h(s) {
+		s = tolower(s)
+		sub(/^0+/, "", s)
+		return (s == "") ? "0" : s
+	}
+	function addr_pfx64(addr,    lr, L, R, H, nl, nr, z, n, i) {
+		if (index(addr, "::") > 0) {
+			split(addr, lr, "::")
+			nl = (lr[1] == "") ? 0 : split(lr[1], L, ":")
+			nr = (lr[2] == "") ? 0 : split(lr[2], R, ":")
+			z = 8 - nl - nr
+			n = 0
+			for (i = 1; i <= nl; i++) H[++n] = norm_h(L[i])
+			for (i = 1; i <= z; i++) H[++n] = "0"
+			for (i = 1; i <= nr; i++) H[++n] = norm_h(R[i])
+		} else {
+			n = split(addr, H, ":")
+			for (i = 1; i <= n; i++) H[i] = norm_h(H[i])
+		}
+		return (n >= 4) ? (H[1] ":" H[2] ":" H[3] ":" H[4]) : ""
+	}
+	{
+		addr = $1
+		m = ""
+		for (n = 2; n < NF; n++) if ($n == "lladdr") { m = tolower($(n + 1)); break }
+		if (m != mac) next
+		st = $NF
+		if (st == "FAILED" || st == "INCOMPLETE") next
+		a = tolower(addr)
+		kind = ""
+		if (a ~ /^f[cd][0-9a-f][0-9a-f]:/) kind = "ula"
+		else if (a ~ /^fe[89ab][0-9a-f]:/) kind = "lla"
+		else if (a ~ /^[23][0-9a-f][0-9a-f][0-9a-f]:/) kind = "gua"
+		else next
+		# ULA / GUA 必须与主路由 LAN 口在同一 /64 网段，过滤旁路由自带的不同 ULA 前缀，避免不可达
+		if (kind != "lla") {
+			p = addr_pfx64(a)
+			if (p == "" || index(pfxs, " " p " ") == 0) next
+		}
+		tier = 0
+		if (pref == "lla_ula_gua") {
+			tier = (kind == "lla") ? 30 : ((kind == "ula") ? 20 : 10)
+		} else if (pref == "gua_ula_lla") {
+			tier = (kind == "gua") ? 30 : ((kind == "ula") ? 20 : 10)
+		} else {
+			tier = (kind == "ula") ? 30 : ((kind == "lla") ? 20 : 10)
+		}
+		bonus = 0
+		if (st == "REACHABLE") bonus = 5
+		else if (st == "DELAY" || st == "PROBE") bonus = 3
+		else if (st == "STALE") bonus = 2
+		else if (st == "PERMANENT") bonus = 1
+		score = tier + bonus
+		if (score > best_score) { best_score = score; best = addr }
+	}
+	END { if (best != "") print best }'
 }
 
 mac_to_eui64() {
@@ -264,8 +329,8 @@ probe_gw_v6() { # 按 MAC 的 EUI-64 主动探测网关在 $dev 各 /64 前缀�
 	ping -c1 -W1 -I "$dev" "fe80::${eui}" >/dev/null 2>&1 &
 }
 
-discover_all() { # 启动时并发探测所有网关的 MAC，并为 ip6_mode=auto 的网关自动发现 IPv6
-	local i id a4 m6 mac a6 probed=
+discover_all() { # 启动时并发探测所有网关的 MAC，并为 ip6_mode=auto 的网关按优先级自动发现同网段 IPv6
+	local i id a4 m6 pref mac a6 probed=
 	for i in $(gws); do
 		eval "a4=\$gw_ip_$i"
 		ping -c1 -W1 -I "$dev" "$a4" >/dev/null 2>&1 &
@@ -273,7 +338,7 @@ discover_all() { # 启动时并发探测所有网关的 MAC，并为 ip6_mode=au
 	wait
 	for i in $(gws); do
 		id=$(gw_id "$i")
-		eval "a4=\$gw_ip_$i; m6=\$gw_ip6_mode_$i"
+		eval "a4=\$gw_ip_$i; m6=\$gw_ip6_mode_$i; pref=\$gw_ip6_pref_$i"
 		mac=$(read_gw_mac "$a4")
 		if valid_mac "$mac"; then
 			echo "$mac" >"$RUN/mac.$id"
@@ -282,8 +347,8 @@ discover_all() { # 启动时并发探测所有网关的 MAC，并为 ip6_mode=au
 			eval "mac=\$gw_mac_$i"
 		fi
 		if [ "$m6" = auto ] && [ -n "$mac" ]; then
-			a6=$(pick_ip6_for_mac "$mac")
-			if [ -z "$a6" ] || is_ll6 "$a6"; then
+			a6=$(pick_ip6_for_mac "$mac" "$pref")
+			if [ "$(v6_tier "$a6" "$pref")" -lt 30 ]; then
 				probe_gw_v6 "$mac"
 				probed=1
 			fi
@@ -292,10 +357,10 @@ discover_all() { # 启动时并发探测所有网关的 MAC，并为 ip6_mode=au
 	[ -n "$probed" ] && wait
 	for i in $(gws); do
 		id=$(gw_id "$i")
-		eval "m6=\$gw_ip6_mode_$i; mac=\$gw_mac_$i"
+		eval "m6=\$gw_ip6_mode_$i; pref=\$gw_ip6_pref_$i; mac=\$gw_mac_$i"
 		[ "$m6" = auto ] || continue
 		a6=
-		[ -n "$mac" ] && a6=$(pick_ip6_for_mac "$mac")
+		[ -n "$mac" ] && a6=$(pick_ip6_for_mac "$mac" "$pref")
 		if valid_addr6 "$a6"; then
 			echo "$a6" >"$RUN/auto6.$id"
 			eval "gw_ip6_$i=\$a6"
@@ -757,17 +822,16 @@ track() { # 编号 家族(4|6)：连续 3 次失败判不通，1 次成功就恢
 }
 
 watch() {
-	local i id a4 a6 m6 mac newmac new6 j changed ndp_done last=0 now
+	local i id a4 a6 m6 pref mac newmac new6 cur_t new_t j changed last=0 now
 	trap 'lock_release; exit 0' INT TERM
 	while :; do
 		load
 		[ "$enabled" = 1 ] && [ "$GW_N" -ge 1 ] || exit 0
 		detect
 		changed=
-		ndp_done=
 		for i in $(gws); do
 			id=$(gw_id "$i")
-			eval "a4=\$gw_ip_$i; a6=\$gw_ip6_$i; m6=\$gw_ip6_mode_$i; mac=\$gw_mac_$i"
+			eval "a4=\$gw_ip_$i; a6=\$gw_ip6_$i; m6=\$gw_ip6_mode_$i; pref=\$gw_ip6_pref_$i; mac=\$gw_mac_$i"
 			if track "$i" 4; then
 				changed=1
 				if [ "$TRACK" = down ]; then
@@ -797,15 +861,17 @@ watch() {
 					fi
 				fi
 			fi
-			# 自动发现模式：尚无 IPv6、当前 IPv6 不通（可能宽带换了前缀）、或仅拿到 fe80:: 时尝试重新发现
+			# 自动发现模式：尚无 IPv6、当前 IPv6 不通（可能宽带换了前缀）、或当前并非最高优先级地址时重新发现
 			if [ "$m6" = auto ] && [ -n "$mac" ] && ! down4 "$i"; then
-				if [ -z "$a6" ] || down6 "$i" || is_ll6 "$a6"; then
+				cur_t=$(v6_tier "$a6" "$pref")
+				if [ -z "$a6" ] || down6 "$i" || [ "$cur_t" -lt 30 ]; then
 					probe_gw_v6 "$mac"
 					wait
-					new6=$(pick_ip6_for_mac "$mac")
+					new6=$(pick_ip6_for_mac "$mac" "$pref")
 					if valid_addr6 "$new6" && [ "$new6" != "$a6" ]; then
-						# 仅在原本没有、原本不通、或新地址优先级更高（非 fe80 替换 fe80），且新地址实际可 ping 通时切换，防止震荡
-						if { [ -z "$a6" ] || down6 "$i" || ! is_ll6 "$new6"; } &&
+						new_t=$(v6_tier "$new6" "$pref")
+						# 仅在原本没有、原本不通、或新地址优先级更高，且新地址实际可 ping 通时切换，防止震荡
+						if { [ -z "$a6" ] || down6 "$i" || [ "$new_t" -gt "$cur_t" ]; } &&
 							ping -c1 -W1 -I "$dev" "$new6" >/dev/null 2>&1; then
 							echo "$new6" >"$RUN/auto6.$id"
 							eval "gw_ip6_$i=\$new6"
@@ -873,7 +939,7 @@ v6_text() { # 编号 → 这个网关自己的 IPv6 状态（只在它就是实�
 }
 
 status_json() { # SPEC.md 里的格式，一行 JSON，用 jshn 生成保证转义正确
-	local f i j a4 a6 m6 v6fb via on=
+	local f i j a4 a6 m6 pref v6fb via on=
 	[ -r /usr/share/libubox/jshn.sh ] || { log "缺少 /usr/share/libubox/jshn.sh（需要 jshn 包）"; return 1; }
 	. /usr/share/libubox/jshn.sh
 	running && on=1
@@ -881,13 +947,14 @@ status_json() { # SPEC.md 里的格式，一行 JSON，用 jshn 生成保证转�
 	if [ -n "$on" ]; then json_add_boolean running 1; else json_add_boolean running 0; fi
 	json_add_array gateways
 	for i in $(gws); do
-		eval "a4=\$gw_ip_$i; a6=\$gw_ip6_$i; m6=\$gw_ip6_mode_$i; v6fb=\$gw_v6fb_$i"
+		eval "a4=\$gw_ip_$i; a6=\$gw_ip6_$i; m6=\$gw_ip6_mode_$i; pref=\$gw_ip6_pref_$i; v6fb=\$gw_v6fb_$i"
 		json_add_object
 		json_add_string id "$(gw_id "$i")"
 		json_add_string name "$(gw_name "$i")"
 		json_add_string ip "$a4"
 		json_add_string ip6 "$a6"
 		json_add_string ip6_mode "$m6"
+		json_add_string ip6_prefer "$pref"
 		json_add_string v6_fallback "$v6fb"
 		if [ -z "$on" ]; then
 			# 没在跑时检测结果没有意义

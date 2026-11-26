@@ -498,7 +498,7 @@ return view.extend({
 		};
 
 		o = s.option(form.ListValue, 'ip6_mode', _('IPv6 mode'),
-			_('Auto-discover matches the gateway\'s IPv6 address by its MAC (GUA > ULA > link-local fe80::) and tracks prefix changes automatically.'));
+			_('Auto-discover matches the gateway\'s IPv6 address by its MAC and tracks prefix changes automatically (only on-link ULA/GUA matching the LAN /64 prefix are accepted).'));
 		o.value('auto', _('Auto-discover (by MAC)'));
 		o.value('manual', _('Manual'));
 		o.value('off', _('Disabled'));
@@ -512,6 +512,16 @@ return view.extend({
 			var ip6 = uci.get('handoff', section_id, 'ip6');
 			return ip6 ? 'manual' : 'auto';
 		};
+
+		o = s.option(form.ListValue, 'ip6_prefer', _('IPv6 priority'),
+			_('Address preference when auto-discovering: ULA and link-local (fe80::) stay stable across ISP prefix changes; when fe80:: is used, IPv6 DNS falls back to gateway IPv4 DNS.'));
+		o.value('ula_lla_gua', _('ULA > Link-local (fe80::) > GUA (Recommended)'));
+		o.value('lla_ula_gua', _('Link-local (fe80::) > ULA > GUA'));
+		o.value('gua_ula_lla', _('GUA > ULA > Link-local (fe80::)'));
+		o.default = 'ula_lla_gua';
+		o.modalonly = true;
+		o.rmempty = false;
+		o.depends('ip6_mode', 'auto');
 
 		o = s.option(form.Value, 'ip6', _('IPv6 address'),
 			_('Static IPv6 address of this gateway (without prefix length).'));

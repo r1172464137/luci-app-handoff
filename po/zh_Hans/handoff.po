@@ -153,8 +153,8 @@ msgstr "请填写不带前缀长度的 IPv4 地址"
 msgid "IPv6 mode"
 msgstr "IPv6 模式"
 
-msgid "Auto-discover matches the gateway's IPv6 address by its MAC (GUA > ULA > link-local fe80::) and tracks prefix changes automatically."
-msgstr "自动发现会按网关 MAC 匹配其 IPv6 地址（优先公网 GUA > ULA > 链路本地 fe80::），并自动跟踪前缀变化。"
+msgid "Auto-discover matches the gateway's IPv6 address by its MAC and tracks prefix changes automatically (only on-link ULA/GUA matching the LAN /64 prefix are accepted)."
+msgstr "自动发现会按网关 MAC 匹配其 IPv6 地址并自动跟踪前缀变化（仅采纳与主路由 LAN 同 /64 网段的 ULA/GUA，自动忽略不同网段的 ULA）。"
 
 msgid "Auto-discover (by MAC)"
 msgstr "自动发现（按 MAC）"
@@ -164,6 +164,21 @@ msgstr "手动指定"
 
 msgid "Disabled"
 msgstr "不使用 IPv6"
+
+msgid "IPv6 priority"
+msgstr "IPv6 优先级"
+
+msgid "Address preference when auto-discovering: ULA and link-local (fe80::) stay stable across ISP prefix changes; when fe80:: is used, IPv6 DNS falls back to gateway IPv4 DNS."
+msgstr "自动发现时的地址选择顺序：ULA 和链路本地（fe80::）不受运营商重拨换前缀影响；使用 fe80:: 时 IPv6 DNS 自动回退走网关 IPv4 DNS。"
+
+msgid "ULA > Link-local (fe80::) > GUA (Recommended)"
+msgstr "ULA > 链路本地 (fe80::) > 公网 GUA（推荐）"
+
+msgid "Link-local (fe80::) > ULA > GUA"
+msgstr "链路本地 (fe80::) > ULA > 公网 GUA"
+
+msgid "GUA > ULA > Link-local (fe80::)"
+msgstr "公网 GUA > ULA > 链路本地 (fe80::)"
 
 msgid "IPv6 address"
 msgstr "IPv6 地址"
