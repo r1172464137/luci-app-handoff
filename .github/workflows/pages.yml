@@ -25,12 +25,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  prepare:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: '${{ steps.deployment.outputs.page_url }}'
     steps:
       - uses: actions/checkout@v4
       - name: 确定要部署的 build run ID
@@ -94,5 +91,13 @@ jobs:
           find site -maxdepth 3 -ls
       - uses: actions/upload-pages-artifact@v3
         with: { path: site }
+
+  deploy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: '${{ steps.deployment.outputs.page_url }}'
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4

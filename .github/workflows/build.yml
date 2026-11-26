@@ -65,6 +65,8 @@ jobs:
           ls -la ../out
           [ "$(ls ../out | wc -l)" -ge 2 ] || { echo "没打出界面包和翻译包" >&2; exit 1; }
           if [ "$SIGN" = y ]; then
+            # 仅保留本仓库的两个全架构包，避免把 x86_64 依赖包一并编入软件源索引
+            find bin/packages -type f ! -name '*handoff*.[ia]pk' -delete
             make package/index V=s >index.log 2>&1 || { tail -60 index.log; exit 1; }
             rm -f key-build private-key.pem
             REL=${{ matrix.release }}
