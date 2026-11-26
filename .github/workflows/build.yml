@@ -1,6 +1,5 @@
 # 用 ImmortalWrt SDK 打包：24.10 出 ipk，25.12 出 apk（包与架构无关，x86/64 的 SDK 就够）。
-# 推送 v* 标签时签名、发到 Releases，并把签名软件源部署到 GitHub Pages；
-# 手动触发（workflow_dispatch）也会打包并刷新 GitHub Pages 软件源（不发 Release）。
+# 推送 v* 标签时签名并发到 Releases；完成后由独立的 pages.yml 自动拉取产物部署签名软件源。
 name: build
 
 on:
@@ -90,58 +89,3 @@ jobs:
           gh release create "$GITHUB_REF_NAME" pkgs/*handoff*.ipk pkgs/*handoff*.apk \
             -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
             --notes "推荐通过签名软件源安装与升级，详见 README；也可直接下载：24.10 用 .ipk，25.12 用 .apk。"
-
-  pages:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: package
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: '${{ steps.deploy.outputs.page_url }}'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { pattern: 'pkg-*', path: pkgs, merge-multiple: true }
-      - name: 组装软件源站点（feed + 公钥 + 首页）
-        run: |
-          mkdir -p site/feed
-          cp -r pkgs/site/feed/* site/feed/
-          cp keys/* site/feed/
-          cat > site/index.html <<'EOF'
-          <!doctype html>
-          <html lang="zh-CN">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>luci-app-handoff 软件源</title>
-            <style>
-              body{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;line-height:1.6;color:#222}
-              pre{background:#f5f6f8;padding:12px 14px;border-radius:6px;overflow-x:auto;font-size:13px}
-              code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-              h2{margin-top:28px}
-              a{color:#0052ab}
-            </style>
-          </head>
-          <body>
-            <h1>luci-app-handoff 签名软件源</h1>
-            <p>包与架构无关（<code>all</code>），适用于所有架构的 OpenWrt / ImmortalWrt 24.10（opkg）与 25.12（apk）。</p>
-            <h2>OpenWrt / ImmortalWrt 24.10（opkg）</h2>
-            <pre><code>wget -qO /etc/opkg/keys/e5d081b67f327ff4 https://r1172464137.github.io/luci-app-handoff/feed/handoff-opkg.pub
-          echo 'src/gz handoff https://r1172464137.github.io/luci-app-handoff/feed/24.10' &gt;&gt; /etc/opkg/customfeeds.conf
-          opkg update &amp;&amp; opkg install luci-app-handoff luci-i18n-handoff-zh-cn</code></pre>
-            <h2>OpenWrt / ImmortalWrt 25.12（apk）</h2>
-            <pre><code>wget -qO /etc/apk/keys/handoff-apk.pem https://r1172464137.github.io/luci-app-handoff/feed/handoff-apk.pem
-          echo 'https://r1172464137.github.io/luci-app-handoff/feed/25.12/packages.adb' &gt;&gt; /etc/apk/repositories.d/customfeeds.list
-          apk update &amp;&amp; apk add luci-app-handoff luci-i18n-handoff-zh-cn</code></pre>
-            <p>仓库主页：<a href="https://github.com/r1172464137/luci-app-handoff">r1172464137/luci-app-handoff</a></p>
-          </body>
-          </html>
-          EOF
-          find site -maxdepth 3 -ls
-      - uses: actions/upload-pages-artifact@v3
-        with: { path: site }
-      - id: deploy
-        uses: actions/deploy-pages@v4
